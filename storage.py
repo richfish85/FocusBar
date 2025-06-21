@@ -17,9 +17,10 @@ def load_sessions():
         with open(_data_file(), 'r') as f:
             data = json.load(f)
             data.setdefault('theme', 'superhero')
+            data.setdefault('tasks', [])
             return data
     except Exception:
-        return {'sessions_by_date': {}, 'categories': {}, 'theme': 'superhero'}
+        return {'sessions_by_date': {}, 'categories': {}, 'tasks': [], 'theme': 'superhero'}
 
 
 def save_sessions(data):
