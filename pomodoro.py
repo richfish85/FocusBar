@@ -15,6 +15,8 @@ class PomodoroTimer:
         self.current_time = WORK_DURATION
         self.on_break = False
 
+        self.default_bg = master.cget('bg')
+
         self.master.geometry('600x400')
 
         self.label = tk.Label(master, text=self._format_time(self.current_time), font=('Helvetica', 48))
@@ -27,6 +29,8 @@ class PomodoroTimer:
         self.start_button.pack(side='left', padx=5)
         self.stop_button = tk.Button(button_frame, text='Stop', command=self.stop)
         self.stop_button.pack(side='left', padx=5)
+        self.reset_button = tk.Button(button_frame, text='Reset', command=self.reset)
+        self.reset_button.pack(side='left', padx=5)
         self.save_button = tk.Button(button_frame, text='Save', command=self.save_session)
         self.save_button.pack(side='left', padx=5)
 
@@ -50,6 +54,11 @@ class PomodoroTimer:
         self.sessions = {}
         self.start_timestamp = None
 
+        # key bindings
+        master.bind('<space>', self.toggle)
+        master.bind('s', lambda e: self.save_session())
+        master.bind('r', lambda e: self.reset())
+
     def _format_time(self, seconds):
         m, s = divmod(seconds, 60)
         return f"{m:02d}:{s:02d}"
@@ -59,6 +68,7 @@ class PomodoroTimer:
             if self.current_time > 0:
                 self.current_time -= 1
             else:
+                self._alert()
                 self.on_break = not self.on_break
                 self.current_time = BREAK_DURATION if self.on_break else WORK_DURATION
             self.label.config(text=self._format_time(self.current_time))
@@ -73,20 +83,90 @@ class PomodoroTimer:
     def stop(self):
         self.is_running = False
 
+    def toggle(self, event=None):
+        if self.is_running:
+            self.stop()
+        else:
+            self.start()
+
+    def _alert(self):
+        # play sound
+        try:
+            if sys.platform == 'win32':
+                import winsound
+                winsound.MessageBeep()
+            else:
+                import simpleaudio as sa
+                import math
+                import struct
+                freq = 880
+                fs = 44100
+                dur = 0.2
+                samples = [math.sin(2 * math.pi * freq * t / fs) for t in range(int(fs*dur))]
+                audio = b''.join(struct.pack('<h', int(s*32767*0.3)) for s in samples)
+                sa.play_buffer(audio, 1, 2, fs)
+        except Exception:
+            try:
+                self.master.bell()
+            except Exception:
+                pass
+
+        # flash background
+        self.master.config(bg='yellow')
+        self.master.after(1000, lambda: self.master.config(bg=self.default_bg))
+
+    def reset(self, event=None):
+        self.is_running = False
+        self.current_time = WORK_DURATION
+        self.on_break = False
+        self.label.config(text=self._format_time(self.current_time))
+
     def _elapsed(self):
         return WORK_DURATION - self.current_time
 
     def save_session(self):
         elapsed = self._elapsed()
         label = f"{self._format_time(elapsed)}/{self._format_time(WORK_DURATION)}"
-        name = simpledialog.askstring('Save Session', 'Enter session name:', initialvalue=label)
-        if not name:
-            name = label
-        self.sessions[name] = elapsed
-        self.session_listbox.insert(tk.END, name)
-        if not self.session_frame.winfo_ismapped():
-            self.session_frame.pack(side='right', padx=10)
-            self.master.geometry('1000x400')
+
+        dialog = tk.Toplevel(self.master)
+        dialog.title('Save Session')
+
+        tk.Label(dialog, text='Name:').grid(row=0, column=0, sticky='e')
+        name_entry = tk.Entry(dialog)
+        name_entry.insert(0, label)
+        name_entry.grid(row=0, column=1, padx=5, pady=2)
+
+        tk.Label(dialog, text='Category:').grid(row=1, column=0, sticky='e')
+        categories = sorted({v.get('category') for v in self.sessions.values() if isinstance(v, dict) and v.get('category')})
+        categories.append('New...')
+        category_var = tk.StringVar(value=categories[0] if categories else '')
+        tk.OptionMenu(dialog, category_var, *categories).grid(row=1, column=1, sticky='w', padx=5, pady=2)
+
+        tk.Label(dialog, text='Notes:').grid(row=2, column=0, sticky='ne')
+        notes_widget = tk.Text(dialog, height=6, width=40)
+        notes_widget.grid(row=2, column=1, padx=5, pady=2)
+
+        def on_save():
+            name = name_entry.get() or label
+            category = category_var.get()
+            if category == 'New...':
+                new_cat = simpledialog.askstring('New Category', 'Category name:')
+                if new_cat:
+                    category = new_cat
+            notes_text = notes_widget.get('1.0', tk.END).strip()
+            self.sessions[name] = {
+                'elapsed': elapsed,
+                'timestamp': self.start_timestamp,
+                'category': category,
+                'notes': notes_text
+            }
+            self.session_listbox.insert(tk.END, name)
+            if not self.session_frame.winfo_ismapped():
+                self.session_frame.pack(side='right', padx=10)
+                self.master.geometry('1000x400')
+            dialog.destroy()
+
+        tk.Button(dialog, text='Save', command=on_save).grid(row=3, column=0, columnspan=2, pady=5)
 
     def rename_session(self):
         sel = self.session_listbox.curselection()
