@@ -1,68 +1,127 @@
 import tkinter as tk
-from tkinter import simpledialog, colorchooser
+from tkinter import ttk, simpledialog, colorchooser, messagebox
 import time
 import sys
 import os
 import json
 from datetime import datetime
 import ctypes
+from dataclasses import dataclass
+
+from storage import load_sessions, save_sessions
 
 WORK_DURATION = 25 * 60  # 25 minutes
 BREAK_DURATION = 5 * 60  # 5 minutes
+LONG_BREAK_DURATION = 15 * 60  # 15 minutes
+
+
+@dataclass
+class TimerState:
+    remaining: int
+    mode: str  # 'work' or 'break'
+    running: bool = False
+
+
+class SessionDialog(tk.Toplevel):
+    def __init__(self, master, categories, label):
+        super().__init__(master)
+        self.result = None
+        self.title('Save Session')
+
+        ttk.Label(self, text='Name:').grid(row=0, column=0, sticky='e')
+        self.name_entry = ttk.Entry(self)
+        self.name_entry.insert(0, label)
+        self.name_entry.grid(row=0, column=1, padx=5, pady=2)
+
+        ttk.Label(self, text='Category:').grid(row=1, column=0, sticky='e')
+        options = sorted(categories) + ['New...']
+        self.category_var = tk.StringVar(value=options[0] if options else '')
+        self.category_menu = ttk.Combobox(self, textvariable=self.category_var, values=options, state='readonly')
+        self.category_menu.grid(row=1, column=1, sticky='w', padx=5, pady=2)
+
+        ttk.Label(self, text='Notes:').grid(row=2, column=0, sticky='ne')
+        self.notes = tk.Text(self, height=6, width=40)
+        self.notes.grid(row=2, column=1, padx=5, pady=2)
+
+        ttk.Button(self, text='Save', command=self._on_save).grid(row=3, column=0, columnspan=2, pady=5)
+
+    def _on_save(self):
+        name = self.name_entry.get()
+        category = self.category_var.get()
+        self.result = {
+            'name': name,
+            'category': category,
+            'notes': self.notes.get('1.0', tk.END).strip()
+        }
+        self.destroy()
 
 class PomodoroTimer:
     def __init__(self, master):
         self.master = master
         self.master.title('Pomodoro Timer')
-        self.is_running = False
-        self.current_time = WORK_DURATION
-        self.on_break = False
+        self.state = TimerState(WORK_DURATION, 'work', False)
+        self.pomo_count = 0
 
         self.default_bg = master.cget('bg')
 
         self.master.geometry('600x400')
 
-        self.label = tk.Label(master, text=self._format_time(self.current_time), font=('Helvetica', 48))
+        style = ttk.Style()
+        style.configure('Work.Horizontal.TProgressbar', troughcolor=self.default_bg, background='red')
+        style.configure('Break.Horizontal.TProgressbar', troughcolor=self.default_bg, background='green')
+
+        self.label = ttk.Label(master, text=self._format_time(self.state.remaining), font=('Helvetica', 48))
         self.label.pack(pady=20)
 
-        button_frame = tk.Frame(master)
+        self.progress = ttk.Progressbar(master, length=400, mode='determinate', maximum=WORK_DURATION)
+        self.progress.pack(fill='x', padx=10)
+
+        button_frame = ttk.Frame(master)
         button_frame.pack(pady=10)
 
-        self.start_button = tk.Button(button_frame, text='Start', command=self.start)
+        self.start_button = ttk.Button(button_frame, text='Start', command=self.start)
         self.start_button.pack(side='left', padx=5)
-        self.stop_button = tk.Button(button_frame, text='Stop', command=self.stop)
+        self.stop_button = ttk.Button(button_frame, text='Stop', command=self.stop)
         self.stop_button.pack(side='left', padx=5)
-        self.reset_button = tk.Button(button_frame, text='Reset', command=self.reset)
+        self.reset_button = ttk.Button(button_frame, text='Reset', command=self.reset)
         self.reset_button.pack(side='left', padx=5)
-        self.save_button = tk.Button(button_frame, text='Save', command=self.save_session)
+        self.save_button = ttk.Button(button_frame, text='Save', command=self.save_session)
         self.save_button.pack(side='left', padx=5)
-        self.category_button = tk.Button(button_frame, text='\U0001F5C2 Categories', command=self.manage_categories)
+        self.category_button = ttk.Button(button_frame, text='\U0001F5C2 Categories', command=self.manage_categories)
         self.category_button.pack(side='left', padx=5)
+        self.stats_button = ttk.Button(button_frame, text='Stats', command=self.show_stats)
+        self.stats_button.pack(side='left', padx=5)
 
-        dock_frame = tk.Frame(master)
+        dock_frame = ttk.Frame(master)
         dock_frame.pack(side='bottom', pady=5)
-        self.dock_bottom_btn = tk.Button(dock_frame, text='Dock Bottom', command=self.dock_bottom)
+        self.dock_bottom_btn = ttk.Button(dock_frame, text='Dock Bottom', command=self.dock_bottom)
         self.dock_bottom_btn.pack(side='left', padx=5)
-        self.dock_right_btn = tk.Button(dock_frame, text='Dock Right', command=self.dock_right)
+        self.dock_right_btn = ttk.Button(dock_frame, text='Dock Right', command=self.dock_right)
         self.dock_right_btn.pack(side='left', padx=5)
 
-        self.session_frame = tk.Frame(master)
+        self.session_frame = ttk.Frame(master)
+        filter_frame = ttk.Frame(self.session_frame)
+        filter_frame.pack(fill='x')
+        ttk.Label(filter_frame, text='Filter:').pack(side='left')
+        self.filter_var = tk.StringVar(value='All')
+        self.filter_menu = ttk.Combobox(filter_frame, textvariable=self.filter_var, state='readonly')
+        self.filter_menu.pack(side='left', padx=5)
+        self.filter_menu.bind('<<ComboboxSelected>>', lambda e: self.refresh_sessions())
+
         self.session_listbox = tk.Listbox(self.session_frame)
         self.session_listbox.pack()
         self.session_listbox.bind('<Double-1>', self.view_session)
-        manage_frame = tk.Frame(self.session_frame)
+        manage_frame = ttk.Frame(self.session_frame)
         manage_frame.pack(pady=5)
-        self.rename_button = tk.Button(manage_frame, text='Rename', command=self.rename_session)
+        self.rename_button = ttk.Button(manage_frame, text='Rename', command=self.rename_session)
         self.rename_button.pack(side='left', padx=5)
-        self.delete_button = tk.Button(manage_frame, text='Delete', command=self.delete_session)
+        self.delete_button = ttk.Button(manage_frame, text='Delete', command=self.delete_session)
         self.delete_button.pack(side='left', padx=5)
 
         self.sessions = {}
         self.categories = {}
         self.start_timestamp = None
 
-        self.data_dir = os.path.join(os.path.expanduser('~'), '.pomopad')
-        os.makedirs(self.data_dir, exist_ok=True)
         self.load_data()
         self.master.protocol('WM_DELETE_WINDOW', self.on_close)
 
@@ -71,32 +130,112 @@ class PomodoroTimer:
         master.bind('s', lambda e: self.save_session())
         master.bind('r', lambda e: self.reset())
 
+        self._update_display()
+
+    def _color_emoji(self, hex_color: str) -> str:
+        try:
+            r = int(hex_color[1:3], 16)
+            g = int(hex_color[3:5], 16)
+            b = int(hex_color[5:7], 16)
+        except Exception:
+            r = g = b = 0
+        if r < 40 and g < 40 and b < 40:
+            return '⬛'
+        if r > 220 and g > 220 and b > 220:
+            return '⬜'
+        if r >= g and r >= b:
+            if g > b:
+                return '🟧'
+            return '🟥'
+        if g >= r and g >= b:
+            return '🟩'
+        return '🟦'
+
+    def update_filter_options(self):
+        options = ['All'] + sorted(self.categories.keys())
+        self.filter_menu['values'] = options
+        if self.filter_var.get() not in options:
+            self.filter_var.set('All')
+
+    def refresh_sessions(self):
+        self.session_listbox.delete(0, tk.END)
+        selected = self.filter_var.get()
+        for name, data in self.sessions.items():
+            cat = data.get('category', '')
+            if selected == 'All' or cat == selected:
+                color = self.categories.get(cat, '#000000')
+                self.session_listbox.insert(tk.END, f"{self._color_emoji(color)} {name}")
+
+    def show_stats(self):
+        today = datetime.now().date()
+        totals = {}
+        for data in self.sessions.values():
+            ts = data.get('timestamp')
+            if ts and datetime.fromtimestamp(ts).date() == today:
+                cat = data.get('category', '')
+                totals[cat] = totals.get(cat, 0) + data.get('elapsed', 0)
+        if not totals:
+            messagebox.showinfo('Stats', 'No sessions recorded today')
+            return
+        import matplotlib.pyplot as plt
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        fig, ax = plt.subplots(figsize=(4, 3))
+        cats = list(totals.keys())
+        mins = [totals[c] / 60 for c in cats]
+        ax.bar(cats, mins, color=[self.categories.get(c, '#888888') for c in cats])
+        ax.set_ylabel('Minutes')
+        ax.set_title('Today')
+        dialog = tk.Toplevel(self.master)
+        dialog.title('Daily Stats')
+        canvas = FigureCanvasTkAgg(fig, master=dialog)
+        canvas.draw()
+        canvas.get_tk_widget().pack()
+        ttk.Button(dialog, text='Close', command=dialog.destroy).pack(pady=5)
+
     def _format_time(self, seconds):
         m, s = divmod(seconds, 60)
         return f"{m:02d}:{s:02d}"
 
+    def _update_display(self):
+        self.label.config(text=self._format_time(self.state.remaining))
+        if self.state.mode == 'break':
+            self.progress.configure(style='Break.Horizontal.TProgressbar', maximum=BREAK_DURATION if self.pomo_count % 4 else LONG_BREAK_DURATION)
+        else:
+            self.progress.configure(style='Work.Horizontal.TProgressbar', maximum=WORK_DURATION)
+        self.progress['value'] = (self.progress['maximum'] - self.state.remaining)
+
     def _tick(self):
-        if self.is_running:
-            if self.current_time > 0:
-                self.current_time -= 1
+        if self.state.running:
+            if self.state.remaining > 0:
+                self.state.remaining -= 1
             else:
                 self._alert()
-                self.on_break = not self.on_break
-                self.current_time = BREAK_DURATION if self.on_break else WORK_DURATION
-            self.label.config(text=self._format_time(self.current_time))
+                if self.state.mode == 'work':
+                    self.pomo_count += 1
+                    if self.pomo_count % 4 == 0:
+                        self.state.remaining = LONG_BREAK_DURATION
+                    else:
+                        self.state.remaining = BREAK_DURATION
+                    self.state.mode = 'break'
+                else:
+                    self.state.mode = 'work'
+                    self.state.remaining = WORK_DURATION
+            self._update_display()
             self.master.after(1000, self._tick)
 
     def start(self):
-        if not self.is_running:
-            self.is_running = True
-            self.start_timestamp = time.time()
+        if not self.state.running:
+            self.state.running = True
+            if self.state.mode == 'work':
+                self.start_timestamp = time.time()
+            self._update_display()
             self._tick()
 
     def stop(self):
-        self.is_running = False
+        self.state.running = False
 
     def toggle(self, event=None):
-        if self.is_running:
+        if self.state.running:
             self.stop()
         else:
             self.start()
@@ -128,60 +267,44 @@ class PomodoroTimer:
         self.master.after(1000, lambda: self.master.config(bg=self.default_bg))
 
     def reset(self, event=None):
-        self.is_running = False
-        self.current_time = WORK_DURATION
-        self.on_break = False
-        self.label.config(text=self._format_time(self.current_time))
+        self.state.running = False
+        self.state.remaining = WORK_DURATION
+        self.state.mode = 'work'
+        self.pomo_count = 0
+        self._update_display()
 
     def _elapsed(self):
-        return WORK_DURATION - self.current_time
+        if self.state.mode == 'work':
+            return WORK_DURATION - self.state.remaining
+        return WORK_DURATION
 
     def save_session(self):
         elapsed = self._elapsed()
         label = f"{self._format_time(elapsed)}/{self._format_time(WORK_DURATION)}"
-
-        dialog = tk.Toplevel(self.master)
-        dialog.title('Save Session')
-
-        tk.Label(dialog, text='Name:').grid(row=0, column=0, sticky='e')
-        name_entry = tk.Entry(dialog)
-        name_entry.insert(0, label)
-        name_entry.grid(row=0, column=1, padx=5, pady=2)
-
-        tk.Label(dialog, text='Category:').grid(row=1, column=0, sticky='e')
-        categories = sorted(self.categories.keys())
-        categories.append('New...')
-        category_var = tk.StringVar(value=categories[0] if categories else '')
-        tk.OptionMenu(dialog, category_var, *categories).grid(row=1, column=1, sticky='w', padx=5, pady=2)
-
-        tk.Label(dialog, text='Notes:').grid(row=2, column=0, sticky='ne')
-        notes_widget = tk.Text(dialog, height=6, width=40)
-        notes_widget.grid(row=2, column=1, padx=5, pady=2)
-
-        def on_save():
-            name = name_entry.get() or label
-            category = category_var.get()
-            if category == 'New...':
-                new_cat = simpledialog.askstring('New Category', 'Category name:')
-                if new_cat:
-                    color = colorchooser.askcolor()[1] or '#ffffff'
-                    self.categories[new_cat] = color
-                    category = new_cat
-            notes_text = notes_widget.get('1.0', tk.END).strip()
-            self.sessions[name] = {
-                'elapsed': elapsed,
-                'timestamp': self.start_timestamp,
-                'category': category,
-                'notes': notes_text
-            }
-            self.session_listbox.insert(tk.END, name)
-            if not self.session_frame.winfo_ismapped():
-                self.session_frame.pack(side='right', padx=10)
-                self.master.geometry('1000x400')
-            dialog.destroy()
-            self.save_data()
-
-        tk.Button(dialog, text='Save', command=on_save).grid(row=3, column=0, columnspan=2, pady=5)
+        dialog = SessionDialog(self.master, self.categories.keys(), label)
+        dialog.wait_window()
+        if not dialog.result:
+            return
+        name = dialog.result['name'] or label
+        category = dialog.result['category']
+        if category == 'New...':
+            new_cat = simpledialog.askstring('New Category', 'Category name:')
+            if new_cat:
+                color = colorchooser.askcolor()[1] or '#ffffff'
+                self.categories[new_cat] = color
+                category = new_cat
+                self.update_filter_options()
+        self.sessions[name] = {
+            'elapsed': elapsed,
+            'timestamp': self.start_timestamp,
+            'category': category,
+            'notes': dialog.result['notes']
+        }
+        self.refresh_sessions()
+        if not self.session_frame.winfo_ismapped():
+            self.session_frame.pack(side='right', padx=10)
+            self.master.geometry('1000x400')
+        self.save_data()
 
     def rename_session(self):
         sel = self.session_listbox.curselection()
@@ -193,6 +316,7 @@ class PomodoroTimer:
             self.sessions[new_name] = self.sessions.pop(current)
             self.session_listbox.delete(sel)
             self.session_listbox.insert(sel, new_name)
+            self.refresh_sessions()
             self.save_data()
 
     def delete_session(self):
@@ -202,6 +326,7 @@ class PomodoroTimer:
         name = self.session_listbox.get(sel)
         self.session_listbox.delete(sel)
         self.sessions.pop(name, None)
+        self.refresh_sessions()
         if self.session_listbox.size() == 0:
             self.session_frame.pack_forget()
             self.master.geometry('600x400')
@@ -260,13 +385,14 @@ class PomodoroTimer:
         for c in self.categories:
             listbox.insert(tk.END, c)
 
-        btn_frame = tk.Frame(dialog)
+        btn_frame = ttk.Frame(dialog)
         btn_frame.pack(side='right', fill='y')
 
         def refresh_list():
             listbox.delete(0, tk.END)
             for c in self.categories:
                 listbox.insert(tk.END, c)
+            self.update_filter_options()
 
         def add_cat():
             name = simpledialog.askstring('Add Category', 'Name:')
@@ -275,6 +401,7 @@ class PomodoroTimer:
                 self.categories[name] = color
                 refresh_list()
                 self.save_data()
+                self.update_filter_options()
 
         def rename_cat():
             sel = listbox.curselection()
@@ -286,6 +413,7 @@ class PomodoroTimer:
                 self.categories[new] = self.categories.pop(old)
                 refresh_list()
                 self.save_data()
+                self.update_filter_options()
 
         def delete_cat():
             sel = listbox.curselection()
@@ -299,6 +427,7 @@ class PomodoroTimer:
                         s['category'] = ''
                 refresh_list()
                 self.save_data()
+                self.update_filter_options()
 
         def change_color():
             sel = listbox.curselection()
@@ -310,36 +439,24 @@ class PomodoroTimer:
                 self.categories[name] = color
                 self.save_data()
 
-        tk.Button(btn_frame, text='Add', command=add_cat).pack(fill='x')
-        tk.Button(btn_frame, text='Rename', command=rename_cat).pack(fill='x')
-        tk.Button(btn_frame, text='Delete', command=delete_cat).pack(fill='x')
-        tk.Button(btn_frame, text='Color', command=change_color).pack(fill='x')
-
-    def _data_file(self):
-        now = datetime.now()
-        return os.path.join(self.data_dir, f'sessions_{now:%Y-%m}.json')
+        ttk.Button(btn_frame, text='Add', command=add_cat).pack(fill='x')
+        ttk.Button(btn_frame, text='Rename', command=rename_cat).pack(fill='x')
+        ttk.Button(btn_frame, text='Delete', command=delete_cat).pack(fill='x')
+        ttk.Button(btn_frame, text='Color', command=change_color).pack(fill='x')
 
     def load_data(self):
-        try:
-            with open(self._data_file(), 'r') as f:
-                data = json.load(f)
-            self.sessions = data.get('sessions', {})
-            self.categories = data.get('categories', {})
-            for name in self.sessions:
-                self.session_listbox.insert(tk.END, name)
-            if self.sessions:
-                self.session_frame.pack(side='right', padx=10)
-                self.master.geometry('1000x400')
-        except Exception:
-            pass
+        data = load_sessions()
+        self.sessions = data.get('sessions', {})
+        self.categories = data.get('categories', {})
+        self.update_filter_options()
+        self.refresh_sessions()
+        if self.sessions:
+            self.session_frame.pack(side='right', padx=10)
+            self.master.geometry('1000x400')
 
     def save_data(self):
         data = {'sessions': self.sessions, 'categories': self.categories}
-        try:
-            with open(self._data_file(), 'w') as f:
-                json.dump(data, f, indent=2)
-        except Exception:
-            pass
+        save_sessions(data)
 
     def on_close(self):
         self.save_data()
