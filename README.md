@@ -4,9 +4,10 @@ This repository contains a simple Pomodoro timer written in Python. It provides 
 
 ## Usage
 
-Run the application with Python 3:
+Install dependencies with pip and run the application with Python 3:
 
 ```bash
+pip install pillow darkdetect
 python3 pomodoro.py
 ```
 
