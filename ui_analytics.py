@@ -7,12 +7,13 @@ import matplotlib.pyplot as plt
 
 def aggregate(sessions_by_date, start_date, end_date):
     total = {}
+    colors = {}
     for date, sess in sessions_by_date.items():
         if start_date <= date <= end_date:
-            for s in sess.values():
-                cat = s.get("category") or "Uncategorised"
-                total[cat] = total.get(cat, 0) + s.get("elapsed", 0)
-    return total
+            for name, s in sess.items():
+                total[name] = total.get(name, 0) + s.get("elapsed", 0)
+                colors[name] = s.get("color", "#888888")
+    return total, colors
 
 
 def setup(frame):
@@ -48,12 +49,12 @@ def refresh(ctx, sessions_by_date):
     else:
         start = end - timedelta(days=29)
 
-    totals = aggregate(sessions_by_date, start.isoformat(), end.isoformat())
+    totals, colors = aggregate(sessions_by_date, start.isoformat(), end.isoformat())
     ctx["ax_cat"].clear()
     if totals:
         cats = list(totals.keys())
         mins = [totals[c] / 60 for c in cats]
-        ctx["ax_cat"].pie(mins, labels=cats)
+        ctx["ax_cat"].pie(mins, labels=cats, colors=[colors.get(c, "#888888") for c in cats])
     ctx["canvas_cat"].draw()
 
     ctx["ax_spark"].clear()
@@ -73,17 +74,15 @@ def refresh(ctx, sessions_by_date):
 
 def show_stats(master, sessions_by_date, categories):
     today = datetime.now().date()
-    totals = {}
-    for sess in sessions_by_date.get(today.isoformat(), {}).values():
-        cat = sess.get("category", "")
-        totals[cat] = totals.get(cat, 0) + sess.get("elapsed", 0)
-    if not totals:
+    data = sessions_by_date.get(today.isoformat(), {})
+    if not data:
         messagebox.showinfo("Stats", "No sessions recorded today")
         return
     fig, ax = plt.subplots(figsize=(4, 3))
-    cats = list(totals.keys())
-    mins = [totals[c] / 60 for c in cats]
-    ax.bar(cats, mins, color=[categories.get(c, "#888888") for c in cats])
+    cats = list(data.keys())
+    mins = [s.get("elapsed", 0) / 60 for s in data.values()]
+    colors = [s.get("color", "#888888") for s in data.values()]
+    ax.bar(cats, mins, color=colors)
     ax.set_ylabel("Minutes")
     ax.set_title("Today")
     dialog = tk.Toplevel(master)

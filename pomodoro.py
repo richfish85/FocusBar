@@ -14,6 +14,7 @@ except Exception:
     DARK = False
 
 from storage import load_sessions, save_sessions
+import hashlib
 from timer_model import (
     TimerModel,
     WORK_DURATION,
@@ -62,6 +63,38 @@ class SessionDialog(tk.Toplevel):
         }
         self.destroy()
 
+
+class TaskDialog(tk.Toplevel):
+    def __init__(self, master, task=None):
+        super().__init__(master)
+        self.result = None
+        self.title('Edit Task' if task else 'Add Task')
+
+        ttk.Label(self, text='Name:').grid(row=0, column=0, sticky='e')
+        self.name_entry = ttk.Entry(self)
+        if task:
+            self.name_entry.insert(0, task.get('name', ''))
+        self.name_entry.grid(row=0, column=1, padx=5, pady=2)
+
+        ttk.Label(self, text='Notes:').grid(row=1, column=0, sticky='ne')
+        self.notes = tk.Text(self, height=4, width=30)
+        if task:
+            self.notes.insert('1.0', task.get('note', ''))
+        self.notes.grid(row=1, column=1, padx=5, pady=2)
+
+        self.done_var = tk.BooleanVar(value=task.get('done', False) if task else False)
+        ttk.Checkbutton(self, text='Done', variable=self.done_var).grid(row=2, column=1, sticky='w')
+
+        ttk.Button(self, text='Save', command=self._on_save).grid(row=3, column=0, columnspan=2, pady=5)
+
+    def _on_save(self):
+        self.result = {
+            'name': self.name_entry.get(),
+            'note': self.notes.get('1.0', tk.END).strip(),
+            'done': self.done_var.get(),
+        }
+        self.destroy()
+
 class PomodoroTimer:
     def __init__(self, master):
         self.master = master
@@ -104,6 +137,19 @@ class PomodoroTimer:
 
         self.progress = ttk.Progressbar(self.timer_frame, length=200, mode='determinate', maximum=WORK_DURATION)
         self.progress.pack(fill='x', padx=10)
+
+        # todo list
+        self.tasks = []
+        self.active_task = None
+        self.new_task_var = tk.StringVar()
+        task_entry = ttk.Entry(self.timer_frame, textvariable=self.new_task_var)
+        task_entry.pack(fill='x', padx=5, pady=2)
+        task_entry.bind('<Return>', self.add_task)
+
+        self.task_listbox = tk.Listbox(self.timer_frame, height=5)
+        self.task_listbox.pack(fill='both', expand=True, padx=5)
+        self.task_listbox.bind('<Double-1>', self.edit_task)
+        self.task_listbox.bind('<Button-1>', self._task_click)
 
         button_frame = ttk.Frame(self.timer_frame)
         button_frame.pack(pady=10)
@@ -265,12 +311,23 @@ class PomodoroTimer:
 
     def start(self):
         if not self.model.state.running:
+            sel = self.task_listbox.curselection()
+            if sel:
+                self.active_task = self.tasks[sel[0]]
+                self.active_name = self.active_task.get('name')
+            else:
+                self.active_task = None
+                self.active_name = self.quick_name_var.get()
             self.model.start()
             self._update_display()
             self._tick()
 
     def stop(self):
-        self.model.stop()
+        if self.model.state.running:
+            self.model.stop()
+            if self.active_task:
+                self.auto_save_task_session()
+            self.active_task = None
 
     def toggle(self, event=None):
         if self.model.state.running:
@@ -314,6 +371,32 @@ class PomodoroTimer:
 
     def _elapsed(self):
         return self.model.elapsed()
+
+    def auto_save_task_session(self):
+        if not self.active_task:
+            return
+        elapsed = self._elapsed()
+        name = self.active_task.get('name')
+        ts = self.model.start_timestamp
+        date_key = datetime.fromtimestamp(ts).date().isoformat() if ts else datetime.now().date().isoformat()
+        entry = {
+            'elapsed': elapsed,
+            'timestamp': ts,
+            'notes': self.active_task.get('note', ''),
+            'color': self._task_color(name),
+        }
+        self.sessions_by_date.setdefault(date_key, {})[name] = entry
+        self.flat_sessions[name] = (date_key, entry)
+        self.active_name = name
+        self.refresh_sessions()
+        self.streak = self.compute_streak()
+        self.save_data()
+        self.refresh_analytics()
+        self._update_display()
+
+    def _task_color(self, name: str) -> str:
+        h = hashlib.md5(name.encode()).hexdigest()[:6]
+        return f"#{h}"
 
     def save_session(self):
         elapsed = self._elapsed()
@@ -370,6 +453,44 @@ class PomodoroTimer:
         self.save_data()
         self.refresh_analytics()
         self._update_display()
+
+    # ----- task management -----
+    def refresh_task_list(self):
+        self.task_listbox.delete(0, tk.END)
+        for t in self.tasks:
+            prefix = '☑' if t.get('done') else '☐'
+            self.task_listbox.insert(tk.END, f"{prefix} {t.get('name')}")
+
+    def add_task(self, event=None):
+        name = self.new_task_var.get().strip()
+        if not name:
+            return
+        self.tasks.append({'name': name, 'note': '', 'done': False})
+        self.new_task_var.set('')
+        self.refresh_task_list()
+        self.save_data()
+
+    def _task_click(self, event):
+        index = self.task_listbox.nearest(event.y)
+        if event.x < 20 and 0 <= index < len(self.tasks):
+            self.tasks[index]['done'] = not self.tasks[index].get('done')
+            self.refresh_task_list()
+            self.task_listbox.selection_set(index)
+            self.save_data()
+
+    def edit_task(self, event=None):
+        sel = self.task_listbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        task = self.tasks[idx]
+        dialog = TaskDialog(self.master, task)
+        dialog.wait_window()
+        if not dialog.result:
+            return
+        self.tasks[idx] = dialog.result
+        self.refresh_task_list()
+        self.save_data()
 
 
     def rename_session(self):
@@ -444,6 +565,7 @@ class PomodoroTimer:
         data = load_sessions()
         self.sessions_by_date = data.get('sessions_by_date', {})
         self.categories = data.get('categories', {})
+        self.tasks = data.get('tasks', [])
         self.theme_var.set(bool(data.get('theme', self.theme_var.get())))
         self.apply_theme()
         self.flat_sessions = {
@@ -453,6 +575,7 @@ class PomodoroTimer:
         }
         self.streak = self.compute_streak()
         self.sessions_pane.set_data(self.sessions_by_date, self.categories)
+        self.refresh_task_list()
         if self.sessions_by_date:
             pass
 
@@ -460,6 +583,7 @@ class PomodoroTimer:
         data = {
             'sessions_by_date': self.sessions_by_date,
             'categories': self.categories,
+            'tasks': self.tasks,
             'theme': self.theme_var.get(),
         }
         save_sessions(data)
