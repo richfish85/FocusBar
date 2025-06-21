@@ -5,8 +5,13 @@ import sys
 from datetime import datetime, timedelta
 import ctypes
 import os
-# Requires: pip install darkdetect
-import darkdetect # type: ignore
+from PIL import Image, ImageTk
+
+try:
+    import darkdetect  # type: ignore
+    DARK = darkdetect.isDark()
+except Exception:
+    DARK = False
 
 from storage import load_sessions, save_sessions
 from timer_model import (
@@ -69,7 +74,7 @@ class PomodoroTimer:
         self.style.configure('Break.Horizontal.TProgressbar', background='green')
         self.style.theme_use('vista')
 
-        self.theme_var = tk.StringVar(value='dark' if darkdetect.isDark() else 'light')
+        self.theme_var = tk.BooleanVar(value=DARK)
         self.apply_theme()
         self.default_bg = master.cget('background')
 
@@ -104,7 +109,7 @@ class PomodoroTimer:
         button_frame.pack(pady=10)
 
         self.icons = {
-            name: tk.PhotoImage(file=os.path.join(ICON_DIR, f"{name}.ico"))
+            name: ImageTk.PhotoImage(Image.open(os.path.join(ICON_DIR, f"{name}.ico")))
             for name in ("start", "stop", "reset", "category", "stats")
         }
 
@@ -120,14 +125,15 @@ class PomodoroTimer:
         self.category_button.pack(side='left', padx=2)
         self.stats_button = ttk.Button(button_frame, image=self.icons['stats'], command=self.show_stats)
         self.stats_button.pack(side='left', padx=2)
-        ttk.Checkbutton(
+        self.theme_switch = ttk.Checkbutton(
             button_frame,
-            text='\u263E',
+            text='\u263E' if self.theme_var.get() else '\u2600',
             variable=self.theme_var,
-            onvalue='dark',
-            offvalue='light',
+            onvalue=True,
+            offvalue=False,
             command=self.apply_theme,
-        ).pack(side='left', padx=2)
+        )
+        self.theme_switch.pack(side='left', padx=2)
 
         # analytics and sessions
         self.sessions_pane = SessionsPane(self.session_frame, self.view_session)
@@ -220,10 +226,14 @@ class PomodoroTimer:
         show_stats(self.master, self.sessions_by_date, self.categories)
 
     def apply_theme(self, *_):
-        if self.theme_var.get() == 'dark':
+        if self.theme_var.get():
             self.master.tk_setPalette(background='#333333', foreground='#ffffff')
+            if hasattr(self, 'theme_switch'):
+                self.theme_switch.config(text='\u263E')
         else:
             self.master.tk_setPalette(background='', foreground='')
+            if hasattr(self, 'theme_switch'):
+                self.theme_switch.config(text='\u2600')
 
     def _format_time(self, seconds):
         m, s = divmod(seconds, 60)
@@ -420,7 +430,7 @@ class PomodoroTimer:
         data = load_sessions()
         self.sessions_by_date = data.get('sessions_by_date', {})
         self.categories = data.get('categories', {})
-        self.theme_var.set(data.get('theme', self.theme_var.get()))
+        self.theme_var.set(bool(data.get('theme', self.theme_var.get())))
         self.apply_theme()
         self.flat_sessions = {
             name: (date, sess[name])
