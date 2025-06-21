@@ -16,6 +16,7 @@
     <Grid x:Name="LayoutRoot" Background="Transparent">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
@@ -24,20 +25,29 @@
                HorizontalAlignment="Center"
                VerticalAlignment="Center"
                Margin="10"
-               FontSize="14"
+               FontSize="16"
                TextWrapping="Wrap"/>
 
+        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center" Margin="5">
+            <ComboBox x:Name="PomodoroOptions" Width="140" Margin="5" SelectedIndex="0">
+                <ComboBoxItem Content="Focus - 25 min" Tag="25" />
+                <ComboBoxItem Content="Short Break - 5 min" Tag="5" />
+                <ComboBoxItem Content="Long Break - 15 min" Tag="15" />
+            </ComboBox>
+            <TextBlock x:Name="TimeDisplay" Text="00:00" FontSize="20" VerticalAlignment="Center" Margin="5" />
+        </StackPanel>
+
         <ProgressBar x:Name="TimerProgressBar"
-                 Grid.Row="1"
+                 Grid.Row="2"
                  HorizontalAlignment="Stretch"
                  VerticalAlignment="Stretch"
                  Maximum="100"
                  Value="100"
                  Margin="20,0"/>
 
-        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Center" Margin="10">
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Center" Margin="10">
             <Button x:Name="StartPauseButton" Content="Start" Margin="5" Click="StartPauseButton_Click" />
-            <Button x:Name="SkipButton" Content="Skip" Margin="5"/>
+            <Button x:Name="SkipButton" Content="Skip" Margin="5" Click="SkipButton_Click"/>
         </StackPanel>
     </Grid>
 </Window>

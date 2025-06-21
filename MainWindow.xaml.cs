@@ -35,20 +35,65 @@ namespace FocusBar
         private void StartPauseButton_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
         {
             CurrentTaskText.IsReadOnly = true;
+
             if (_currentState == PomodoroState.Stopped)
             {
-                // Start a new Focus session
-                _currentState = PomodoroState.Focus;
-                _totalSeconds = 25 * 60; // 25 minutes
-                _remainingSeconds = _totalSeconds;
-                _pomodoroTimer.Start();
-                StartPauseButton.Content = "Pause"; // Update button text
-                                                    // Change the background color to indicate focus
-                LayoutRoot.Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Colors.CornflowerBlue);
-                CurrentTaskText.IsReadOnly = false;
-            }
+                // Determine selected option
+                var selectedItem = PomodoroOptions.SelectedItem as ComboBoxItem;
+                int minutes = 25;
+                if (selectedItem?.Tag is string tagString && int.TryParse(tagString, out int parsed))
+                {
+                    minutes = parsed;
+                }
 
-            // Add else if logic here for "Pause" and "Resume"
+                _totalSeconds = minutes * 60;
+                _remainingSeconds = _totalSeconds;
+                TimeDisplay.Text = $"{minutes:D2}:00";
+                TimerProgressBar.Value = 100;
+
+                switch (minutes)
+                {
+                    case 5:
+                        _currentState = PomodoroState.ShortBreak;
+                        LayoutRoot.Background = new SolidColorBrush(Colors.MediumSeaGreen);
+                        break;
+                    case 15:
+                        _currentState = PomodoroState.LongBreak;
+                        LayoutRoot.Background = new SolidColorBrush(Colors.SteelBlue);
+                        break;
+                    default:
+                        _currentState = PomodoroState.Focus;
+                        LayoutRoot.Background = new SolidColorBrush(Colors.CornflowerBlue);
+                        break;
+                }
+
+            _pomodoroTimer.Start();
+            StartPauseButton.Content = "Pause";
+            }
+            else
+            {
+                if (_pomodoroTimer.IsEnabled)
+                {
+                    _pomodoroTimer.Stop();
+                    StartPauseButton.Content = "Resume";
+                }
+                else
+                {
+                    _pomodoroTimer.Start();
+                    StartPauseButton.Content = "Pause";
+                }
+            }
+        }
+
+        private void SkipButton_Click(object sender, RoutedEventArgs e)
+        {
+            _pomodoroTimer.Stop();
+            _currentState = PomodoroState.Stopped;
+            StartPauseButton.Content = "Start";
+            TimerProgressBar.Value = 100;
+            TimeDisplay.Text = "00:00";
+            LayoutRoot.Background = new SolidColorBrush(Colors.Transparent);
+            CurrentTaskText.IsReadOnly = false;
         }
 
         public MainWindow()
@@ -92,12 +137,16 @@ namespace FocusBar
 
             // Update the ProgressBar
             TimerProgressBar.Value = ((double)_remainingSeconds / _totalSeconds) * 100;
+            TimeDisplay.Text = $"{_remainingSeconds / 60:D2}:{_remainingSeconds % 60:D2}";
 
             if (_remainingSeconds <= 0)
             {
                 _pomodoroTimer.Stop();
-                // Logic to switch to the next state (e.g., from Focus to Break) goes here
-                // Play a sound, change the color, etc.
+                _currentState = PomodoroState.Stopped;
+                StartPauseButton.Content = "Start";
+                LayoutRoot.Background = new SolidColorBrush(Colors.Transparent);
+                TimeDisplay.Text = "00:00";
+                CurrentTaskText.IsReadOnly = false;
             }
         }
 
