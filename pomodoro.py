@@ -553,5 +553,8 @@ class PomodoroTimer:
 def main():
     root = tk.Tk()
     app = PomodoroTimer(root)
-    app.dock_bottom()  # or app.dock_right() for right docking
+    app.dock_right()  # or app.dock_right() for right docking
     root.mainloop()
+
+if __name__ == "__main__":
+    main()  
