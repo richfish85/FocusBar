@@ -1,22 +1,20 @@
 import tkinter as tk
-from tkinter import simpledialog, colorchooser, messagebox
-from ttkbootstrap import Window
-from ttkbootstrap import ttk
+from tkinter import simpledialog, colorchooser, messagebox, ttk
 import time
 import sys
-import os
-import json
 from datetime import datetime, timedelta
 import ctypes
-from dataclasses import dataclass
+import darkdetect
 
 from storage import load_sessions, save_sessions
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import matplotlib.pyplot as plt
+from timer_model import (
+    TimerModel,
+    WORK_DURATION,
+    BREAK_DURATION,
+    LONG_BREAK_DURATION,
+)
+from ui_analytics import setup as analytics_setup, refresh as analytics_refresh, show_stats
 
-WORK_DURATION = 25 * 60  # 25 minutes
-BREAK_DURATION = 5 * 60  # 5 minutes
-LONG_BREAK_DURATION = 15 * 60  # 15 minutes
 
 ICONS = {
     'start': "iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAAgUlEQVR4nNWWOw6AQAhEZ4z3NntyrOh0+cdIucV7YYBkKSKYrGOU/qmAiy3ZbTvokJgRcVEqIvcMspLQkDOS8BZFI0uvqVdSugOPpHxoVmRtl/wmaRPIJXx6P6fAWqUOLHhJ4IEDiYi8YK1QB1F4SJCBA46IsmCtbQdVOADw97+KGyQfMDeUrtBPAAAAAElFTkSuQmCC",
@@ -27,11 +25,6 @@ ICONS = {
 }
 
 
-@dataclass
-class TimerState:
-    remaining: int
-    mode: str  # 'work' or 'break'
-    running: bool = False
 
 
 class SessionDialog(tk.Toplevel):
@@ -71,25 +64,35 @@ class PomodoroTimer:
     def __init__(self, master):
         self.master = master
         self.master.title('Pomodoro Timer')
-        self.state = TimerState(WORK_DURATION, 'work', False)
-        self.pomo_count = 0
+        self.model = TimerModel()
         self.active_name = 'Session'
 
         self.style = ttk.Style()
         self.style.configure('Work.Horizontal.TProgressbar', background='red')
         self.style.configure('Break.Horizontal.TProgressbar', background='green')
-        self.theme = 'superhero'
+        self.style.theme_use('vista')
+        try:
+            if darkdetect.isDark():
+                master.tk_setPalette(background='#333333', foreground='#ffffff')
+        except Exception:
+            pass
 
-        self.paned = ttk.PanedWindow(master, orient='horizontal')
-        self.paned.pack(fill='both', expand=True)
+        self.nb = ttk.Notebook(master)
+        self.nb.pack(fill='both', expand=True)
 
-        self.timer_frame = ttk.Frame(self.paned)
-        self.paned.add(self.timer_frame, weight=1)
+        self.timer_frame = ttk.Frame(self.nb)
+        self.session_frame = ttk.Frame(self.nb)
+        self.analytics_frame = ttk.Frame(self.nb)
 
-        right_frame = ttk.Frame(self.paned)
-        self.paned.add(right_frame, weight=1)
+        self.nb.add(self.timer_frame, text='Timer')
+        self.nb.add(self.session_frame, text='Sessions')
+        self.nb.add(self.analytics_frame, text='Analytics')
 
-        self.label = ttk.Label(self.timer_frame, text=self._format_time(self.state.remaining), font=('Helvetica', 48))
+        self.label = ttk.Label(
+            self.timer_frame,
+            text=self._format_time(self.model.state.remaining),
+            font=('Helvetica', 48),
+        )
         self.label.pack(pady=20)
 
         # entry for quick session name
@@ -119,15 +122,7 @@ class PomodoroTimer:
         self.stats_button = ttk.Button(button_frame, image=self.icons['stats'], command=self.show_stats)
         self.stats_button.pack(side='left', padx=2)
 
-        self.dark_var = tk.BooleanVar(value=False)
-        self.dark_toggle = ttk.Checkbutton(button_frame, text='Dark Mode', variable=self.dark_var, command=self.toggle_theme)
-        self.dark_toggle.pack(side='left', padx=2)
-
         # analytics and sessions
-        self.analytics_frame = ttk.Frame(right_frame)
-        self.analytics_frame.pack(fill='both', expand=True)
-
-        self.session_frame = ttk.Frame(right_frame)
         filter_frame = ttk.Frame(self.session_frame)
         filter_frame.pack(fill='x')
         ttk.Label(filter_frame, text='Filter:').pack(side='left')
@@ -154,23 +149,11 @@ class PomodoroTimer:
         self.sessions_by_date = {}
         self.flat_sessions = {}
         self.categories = {}
-        self.start_timestamp = None
         self.streak = 0
 
         # analytics widgets
-        self.period_var = tk.StringVar(value='Day')
-        toggle = ttk.Frame(self.analytics_frame)
-        toggle.pack(pady=2)
-        for val in ('Day', 'Week', 'Month'):
-            ttk.Radiobutton(toggle, text=val, variable=self.period_var, value=val, command=self.refresh_analytics).pack(side='left')
-
-        self.fig_cat, self.ax_cat = plt.subplots(figsize=(2.5, 2.5))
-        self.canvas_cat = FigureCanvasTkAgg(self.fig_cat, master=self.analytics_frame)
-        self.canvas_cat.get_tk_widget().pack()
-
-        self.fig_spark, self.ax_spark = plt.subplots(figsize=(2.5, 0.8))
-        self.canvas_spark = FigureCanvasTkAgg(self.fig_spark, master=self.analytics_frame)
-        self.canvas_spark.get_tk_widget().pack(fill='x')
+        self.analytics_ctx = analytics_setup(self.analytics_frame)
+        self.analytics_ctx["period_var"].trace_add("write", lambda *a: self.refresh_analytics())
 
         self.load_data()
         self.master.protocol('WM_DELETE_WINDOW', self.on_close)
@@ -240,105 +223,47 @@ class PomodoroTimer:
         return streak
 
     def refresh_analytics(self):
-        end = datetime.now().date()
-        if self.period_var.get() == 'Day':
-            start = end
-        elif self.period_var.get() == 'Week':
-            start = end - timedelta(days=6)
-        else:
-            start = end - timedelta(days=29)
-        totals = self.aggregate(start.isoformat(), end.isoformat())
-        self.ax_cat.clear()
-        if totals:
-            cats = list(totals.keys())
-            mins = [totals[c] / 60 for c in cats]
-            self.ax_cat.pie(mins, labels=cats)
-        self.canvas_cat.draw()
-
-        self.ax_spark.clear()
-        days = []
-        vals = []
-        d = start
-        while d <= end:
-            key = d.isoformat()
-            total = sum(s.get('elapsed', 0) / 60 for s in self.sessions_by_date.get(key, {}).values())
-            days.append(d)
-            vals.append(total)
-            d += timedelta(days=1)
-        self.ax_spark.plot(range(len(vals)), vals, color='blue')
-        self.ax_spark.axis('off')
-        self.canvas_spark.draw()
+        analytics_refresh(self.analytics_ctx, self.sessions_by_date)
 
     def show_stats(self):
-        today = datetime.now().date()
-        totals = {}
-        for sess in self.sessions_by_date.get(today.isoformat(), {}).values():
-            cat = sess.get('category', '')
-            totals[cat] = totals.get(cat, 0) + sess.get('elapsed', 0)
-        if not totals:
-            messagebox.showinfo('Stats', 'No sessions recorded today')
-            return
-        import matplotlib.pyplot as plt
-        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-        fig, ax = plt.subplots(figsize=(4, 3))
-        cats = list(totals.keys())
-        mins = [totals[c] / 60 for c in cats]
-        ax.bar(cats, mins, color=[self.categories.get(c, '#888888') for c in cats])
-        ax.set_ylabel('Minutes')
-        ax.set_title('Today')
-        dialog = tk.Toplevel(self.master)
-        dialog.title('Daily Stats')
-        canvas = FigureCanvasTkAgg(fig, master=dialog)
-        canvas.draw()
-        canvas.get_tk_widget().pack()
-        ttk.Button(dialog, text='Close', command=dialog.destroy).pack(pady=5)
+        show_stats(self.master, self.sessions_by_date, self.categories)
 
     def _format_time(self, seconds):
         m, s = divmod(seconds, 60)
         return f"{m:02d}:{s:02d}"
 
     def _update_display(self):
-        self.label.config(text=self._format_time(self.state.remaining))
-        if self.state.mode == 'break':
-            self.progress.configure(style='Break.Horizontal.TProgressbar', maximum=BREAK_DURATION if self.pomo_count % 4 else LONG_BREAK_DURATION)
+        self.label.config(text=self._format_time(self.model.state.remaining))
+        if self.model.state.mode == 'break':
+            self.progress.configure(
+                style='Break.Horizontal.TProgressbar',
+                maximum=BREAK_DURATION if self.model.pomo_count % 4 else LONG_BREAK_DURATION,
+            )
         else:
             self.progress.configure(style='Work.Horizontal.TProgressbar', maximum=WORK_DURATION)
-        self.progress['value'] = (self.progress['maximum'] - self.state.remaining)
-        text = f"{self.active_name} \u2192 \u23F1 {self._format_time(self.state.remaining)} left • 🍅 #{self.pomo_count} today • Focus streak: {self.streak} days"
+        self.progress['value'] = (self.progress['maximum'] - self.model.state.remaining)
+        text = f"{self.active_name} \u2192 \u23F1 {self._format_time(self.model.state.remaining)} left • 🍅 #{self.model.pomo_count} today • Focus streak: {self.streak} days"
         self.status_var.set(text)
 
     def _tick(self):
-        if self.state.running:
-            if self.state.remaining > 0:
-                self.state.remaining -= 1
-            else:
-                self._alert()
-                if self.state.mode == 'work':
-                    self.pomo_count += 1
-                    if self.pomo_count % 4 == 0:
-                        self.state.remaining = LONG_BREAK_DURATION
-                    else:
-                        self.state.remaining = BREAK_DURATION
-                    self.state.mode = 'break'
-                else:
-                    self.state.mode = 'work'
-                    self.state.remaining = WORK_DURATION
+        event = self.model.tick()
+        if event:
+            self._alert()
+        if self.model.state.running:
             self._update_display()
             self.master.after(1000, self._tick)
 
     def start(self):
-        if not self.state.running:
-            self.state.running = True
-            if self.state.mode == 'work':
-                self.start_timestamp = time.time()
+        if not self.model.state.running:
+            self.model.start()
             self._update_display()
             self._tick()
 
     def stop(self):
-        self.state.running = False
+        self.model.stop()
 
     def toggle(self, event=None):
-        if self.state.running:
+        if self.model.state.running:
             self.stop()
         else:
             self.start()
@@ -370,16 +295,11 @@ class PomodoroTimer:
         self.master.after(1000, lambda: self.master.config(bg=self.default_bg))
 
     def reset(self, event=None):
-        self.state.running = False
-        self.state.remaining = WORK_DURATION
-        self.state.mode = 'work'
-        self.pomo_count = 0
+        self.model.reset()
         self._update_display()
 
     def _elapsed(self):
-        if self.state.mode == 'work':
-            return WORK_DURATION - self.state.remaining
-        return WORK_DURATION
+        return self.model.elapsed()
 
     def save_session(self):
         elapsed = self._elapsed()
@@ -397,18 +317,17 @@ class PomodoroTimer:
                 self.categories[new_cat] = color
                 category = new_cat
                 self.update_filter_options()
-        date_key = datetime.fromtimestamp(self.start_timestamp).date().isoformat() if self.start_timestamp else datetime.now().date().isoformat()
+        ts = self.model.start_timestamp
+        date_key = datetime.fromtimestamp(ts).date().isoformat() if ts else datetime.now().date().isoformat()
         self.sessions_by_date.setdefault(date_key, {})[name] = {
             'elapsed': elapsed,
-            'timestamp': self.start_timestamp,
+            'timestamp': ts,
             'category': category,
             'notes': dialog.result['notes']
         }
         self.flat_sessions[name] = (date_key, self.sessions_by_date[date_key][name])
         self.active_name = name
         self.refresh_sessions()
-        if not self.session_frame.winfo_ismapped():
-            self.session_frame.pack(fill='both', expand=True)
         self.streak = self.compute_streak()
         self.save_data()
         self.refresh_analytics()
@@ -418,32 +337,22 @@ class PomodoroTimer:
         """Save current session using the text entry without showing a dialog."""
         elapsed = self._elapsed()
         name = self.quick_name_var.get() or f"Session {len(self.flat_sessions)+1}"
-        date_key = datetime.fromtimestamp(self.start_timestamp).date().isoformat() if self.start_timestamp else datetime.now().date().isoformat()
+        ts = self.model.start_timestamp
+        date_key = datetime.fromtimestamp(ts).date().isoformat() if ts else datetime.now().date().isoformat()
         self.sessions_by_date.setdefault(date_key, {})[name] = {
             'elapsed': elapsed,
-            'timestamp': self.start_timestamp,
+            'timestamp': ts,
             'category': '',
             'notes': ''
         }
         self.flat_sessions[name] = (date_key, self.sessions_by_date[date_key][name])
         self.active_name = name
         self.refresh_sessions()
-        if not self.session_frame.winfo_ismapped():
-            self.session_frame.pack(fill='both', expand=True)
         self.streak = self.compute_streak()
         self.save_data()
         self.refresh_analytics()
         self._update_display()
 
-    def toggle_theme(self):
-        """Switch between light and dark themes and persist the choice."""
-        if self.dark_var.get():
-            self.style.theme_use('darkly')
-            self.theme = 'darkly'
-        else:
-            self.style.theme_use('superhero')
-            self.theme = 'superhero'
-        self.save_data()
 
     def rename_session(self):
         sel = self.session_listbox.curselection()
@@ -473,8 +382,6 @@ class PomodoroTimer:
         date_key, _ = self.flat_sessions.pop(name)
         self.sessions_by_date.get(date_key, {}).pop(name, None)
         self.refresh_sessions()
-        if self.session_listbox.size() == 0:
-            self.session_frame.pack_forget()
         self.save_data()
         self.streak = self.compute_streak()
         self.refresh_analytics()
@@ -601,12 +508,6 @@ class PomodoroTimer:
         data = load_sessions()
         self.sessions_by_date = data.get('sessions_by_date', {})
         self.categories = data.get('categories', {})
-        self.theme = data.get('theme', 'superhero')
-        try:
-            self.style.theme_use(self.theme)
-            self.dark_var.set(self.theme == 'darkly')
-        except Exception:
-            pass
         self.flat_sessions = {
             name: (date, sess[name])
             for date, sess in self.sessions_by_date.items()
@@ -616,13 +517,12 @@ class PomodoroTimer:
         self.update_filter_options()
         self.refresh_sessions()
         if self.sessions_by_date:
-            self.session_frame.pack(fill='both', expand=True)
+            pass
 
     def save_data(self):
         data = {
             'sessions_by_date': self.sessions_by_date,
             'categories': self.categories,
-            'theme': self.theme
         }
         save_sessions(data)
 
@@ -649,7 +549,7 @@ class PomodoroTimer:
         self.master.geometry(f"{width}x{sh}+{sw-width}+0")
 
 if __name__ == '__main__':
-    root = Window(themename='superhero')
+    root = tk.Tk()
     timer = PomodoroTimer(root)
     root.protocol('WM_DELETE_WINDOW', timer.on_close)
     root.mainloop()
