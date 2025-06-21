@@ -332,8 +332,22 @@ class PomodoroTimer:
                 category = new_cat
                 self.update_filter_options()
         ts = self.model.start_timestamp
-        date_key = datetime.fromtimestamp(ts).date().isoformat() if ts else datetime.now().date().isoformat()
-
+        date_key = (
+            datetime.fromtimestamp(ts).date().isoformat()
+            if ts
+            else datetime.now().date().isoformat()
+        )
+        self.sessions_by_date.setdefault(date_key, {})[name] = {
+            "elapsed": elapsed,
+            "timestamp": ts,
+            "category": category,
+            "notes": dialog.result["notes"],
+        }
+        self.flat_sessions[name] = (date_key, self.sessions_by_date[date_key][name])
+        self.active_name = name
+        self.refresh_sessions()
+        self.streak = self.compute_streak()
+        self.save_data()
         self.refresh_analytics()
         self._update_display()
 
