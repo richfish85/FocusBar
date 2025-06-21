@@ -17,7 +17,7 @@ def load_sessions():
         with open(_data_file(), 'r') as f:
             return json.load(f)
     except Exception:
-        return {'sessions': {}, 'categories': {}}
+        return {'sessions_by_date': {}, 'categories': {}}
 
 
 def save_sessions(data):
