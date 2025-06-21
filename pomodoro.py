@@ -75,9 +75,10 @@ class PomodoroTimer:
         self.pomo_count = 0
         self.active_name = 'Session'
 
-        style = ttk.Style()
-        style.configure('Work.Horizontal.TProgressbar', background='red')
-        style.configure('Break.Horizontal.TProgressbar', background='green')
+        self.style = ttk.Style()
+        self.style.configure('Work.Horizontal.TProgressbar', background='red')
+        self.style.configure('Break.Horizontal.TProgressbar', background='green')
+        self.theme = 'superhero'
 
         self.paned = ttk.PanedWindow(master, orient='horizontal')
         self.paned.pack(fill='both', expand=True)
@@ -90,6 +91,12 @@ class PomodoroTimer:
 
         self.label = ttk.Label(self.timer_frame, text=self._format_time(self.state.remaining), font=('Helvetica', 48))
         self.label.pack(pady=20)
+
+        # entry for quick session name
+        self.quick_name_var = tk.StringVar(value='Session')
+        self.name_entry = ttk.Entry(self.timer_frame, textvariable=self.quick_name_var)
+        self.name_entry.pack(pady=2)
+        self.name_entry.bind('<Return>', self.quick_save_session)
 
         self.progress = ttk.Progressbar(self.timer_frame, length=200, mode='determinate', maximum=WORK_DURATION)
         self.progress.pack(fill='x', padx=10)
@@ -111,6 +118,10 @@ class PomodoroTimer:
         self.category_button.pack(side='left', padx=2)
         self.stats_button = ttk.Button(button_frame, image=self.icons['stats'], command=self.show_stats)
         self.stats_button.pack(side='left', padx=2)
+
+        self.dark_var = tk.BooleanVar(value=False)
+        self.dark_toggle = ttk.Checkbutton(button_frame, text='Dark Mode', variable=self.dark_var, command=self.toggle_theme)
+        self.dark_toggle.pack(side='left', padx=2)
 
         # analytics and sessions
         self.analytics_frame = ttk.Frame(right_frame)
@@ -403,6 +414,37 @@ class PomodoroTimer:
         self.refresh_analytics()
         self._update_display()
 
+    def quick_save_session(self, event=None):
+        """Save current session using the text entry without showing a dialog."""
+        elapsed = self._elapsed()
+        name = self.quick_name_var.get() or f"Session {len(self.flat_sessions)+1}"
+        date_key = datetime.fromtimestamp(self.start_timestamp).date().isoformat() if self.start_timestamp else datetime.now().date().isoformat()
+        self.sessions_by_date.setdefault(date_key, {})[name] = {
+            'elapsed': elapsed,
+            'timestamp': self.start_timestamp,
+            'category': '',
+            'notes': ''
+        }
+        self.flat_sessions[name] = (date_key, self.sessions_by_date[date_key][name])
+        self.active_name = name
+        self.refresh_sessions()
+        if not self.session_frame.winfo_ismapped():
+            self.session_frame.pack(fill='both', expand=True)
+        self.streak = self.compute_streak()
+        self.save_data()
+        self.refresh_analytics()
+        self._update_display()
+
+    def toggle_theme(self):
+        """Switch between light and dark themes and persist the choice."""
+        if self.dark_var.get():
+            self.style.theme_use('darkly')
+            self.theme = 'darkly'
+        else:
+            self.style.theme_use('superhero')
+            self.theme = 'superhero'
+        self.save_data()
+
     def rename_session(self):
         sel = self.session_listbox.curselection()
         if not sel:
@@ -559,6 +601,12 @@ class PomodoroTimer:
         data = load_sessions()
         self.sessions_by_date = data.get('sessions_by_date', {})
         self.categories = data.get('categories', {})
+        self.theme = data.get('theme', 'superhero')
+        try:
+            self.style.theme_use(self.theme)
+            self.dark_var.set(self.theme == 'darkly')
+        except Exception:
+            pass
         self.flat_sessions = {
             name: (date, sess[name])
             for date, sess in self.sessions_by_date.items()
@@ -571,7 +619,11 @@ class PomodoroTimer:
             self.session_frame.pack(fill='both', expand=True)
 
     def save_data(self):
-        data = {'sessions_by_date': self.sessions_by_date, 'categories': self.categories}
+        data = {
+            'sessions_by_date': self.sessions_by_date,
+            'categories': self.categories,
+            'theme': self.theme
+        }
         save_sessions(data)
 
     def on_close(self):

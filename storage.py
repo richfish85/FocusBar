@@ -15,9 +15,11 @@ def load_sessions():
     """Return saved sessions and categories from disk."""
     try:
         with open(_data_file(), 'r') as f:
-            return json.load(f)
+            data = json.load(f)
+            data.setdefault('theme', 'superhero')
+            return data
     except Exception:
-        return {'sessions_by_date': {}, 'categories': {}}
+        return {'sessions_by_date': {}, 'categories': {}, 'theme': 'superhero'}
 
 
 def save_sessions(data):
