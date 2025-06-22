@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Pomodoro</title>
+<style>
+body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }
+#timer { font-size: 48px; margin: 10px; }
+button { padding: 8px 16px; margin: 5px; }
+</style>
+</head>
+<body>
+<h1>Pomodoro Timer</h1>
+<div id="timer">25:00</div>
+<input id="quick_name" placeholder="Session name" />
+<div>
+  <button onclick="start()">Start</button>
+  <button onclick="stop()">Stop</button>
+  <button onclick="reset()">Reset</button>
+</div>
+<script>
+function formatTime(seconds) {
+  const m = String(Math.floor(seconds / 60)).padStart(2,'0');
+  const s = String(seconds % 60).padStart(2,'0');
+  return `${m}:${s}`;
+}
+async function start() { await pywebview.api.start(); }
+async function stop() { await pywebview.api.stop(); }
+async function reset() { await pywebview.api.reset(); updateDisplay(1500); }
+async function update() {
+  const data = await pywebview.api.tick();
+  updateDisplay(data.remaining);
+}
+function updateDisplay(sec){ document.getElementById('timer').innerText = formatTime(sec); }
+setInterval(update, 1000);
+</script>
+</body>
+</html>
+
